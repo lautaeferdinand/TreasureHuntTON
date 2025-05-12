@@ -1,0 +1,106 @@
+;; TreasureHuntTON Smart Contract
+
+;; Constants
+const int TOTAL_TOKENS = 8000000000; ;; 8 miliar token
+const int OWNER_SHARE = 3200000000;  ;; 40% untuk owner
+const int REWARD_SHARE = 3200000000; ;; 40% untuk hadiah game
+const int DEV_SHARE = 400000000;     ;; 5% untuk developer
+const int LOCKED_SHARE = 400000000;  ;; 5% terkunci
+const int OPERATIONAL_SHARE = 800000000; ;; 10% untuk staking/operasional
+const int UNLOCK_THRESHOLD = 7600000000; ;; 95% dari total token
+
+;; Storage Variables
+(int) total_supply;          ;; Total token yang sudah diterbitkan
+(int) locked_tokens;         ;; Token yang terkunci
+(int) admin_address;         ;; Alamat admin (owner)
+(int) last_reward_update;    ;; Timestamp terakhir pembaruan hadiah
+(map<address, int>) balances; ;; Saldo token pengguna
+(map<address, int>) stakes;   ;; Stake pengguna (untuk PoS)
+(map<int, tuple(slice, int, int)>) rewards; ;; Hadiah: (lokasi, jumlah token, kesulitan)
+(int) reward_count;          ;; Jumlah hadiah aktif
+(map<address, int>) data_used; ;; Data peta yang digunakan (dalam MB)
+
+;; Constructor
+() constructor() {
+    admin_address = my_address();
+    total_supply = 0;
+    locked_tokens = LOCKED_SHARE;
+
+    ;; Inisialisasi distribusi awal
+    balances.set(admin_address, OWNER_SHARE);
+    balances.set(my_address(), DEV_SHARE); ;; Developer (kontrak ini)
+    total_supply = OWNER_SHARE + DEV_SHARE + OPERATIONAL_SHARE;
+    last_reward_update = now();
+}
+
+;; Update hadiah setiap 24 jam
+() update_rewards() impure {
+    int now_time = now();
+    if (now_time - last_reward_update >= 86400) { ;; 24 jam = 86400 detik
+        rewards.clear();
+        reward_count = 0;
+
+        ;; Tambahkan 10 hadiah acak
+        repeat(10) {
+            slice location = random_slice(); ;; Lokasi acak (trotoar/taman)
+            int amount = random(1, 5); ;; Jumlah token acak (1-5)
+            int difficulty = random(1, 10); ;; Tingkat kesulitan acak (1-10)
+            rewards.set(reward_count, (location, amount, difficulty));
+            reward_count = reward_count + 1;
+        }
+        last_reward_update = now_time;
+    }
+}
+
+;; Klaim hadiah berdasarkan lokasi dan tingkat kesulitan
+() claim_reward(slice user, int reward_id) impure {
+    var (location, amount, difficulty) = rewards.get(reward_id) ?? throw(101, "Reward not found");
+    int user_data = data_used.get(user) ?? 0;
+    throw_unless(102, user_data >= 500); ;; Minimal 500 MB data peta
+    throw_unless(103, difficulty <= random(1, 10)); ;; Periksa kesulitan acak
+
+    ;; Berikan 1 token per 500 MB
+    int tokens_to_give = user_data / 500;
+    balances.set(user, (balances.get(user) ?? 0) + tokens_to_give);
+    total_supply = total_supply + tokens_to_give;
+    data_used.set(user, user_data % 500); ;; Reset data yang digunakan
+
+    ;; Hapus hadiah yang diklaim
+    rewards.delete(reward_id);
+
+    ;; Buka kunci token jika total_supply >= 95%
+    if (total_supply >= UNLOCK_THRESHOLD && locked_tokens > 0) {
+        balances.set(admin_address, balances.get(admin_address) ?? 0 + locked_tokens);
+        total_supply = total_supply + locked_tokens;
+        locked_tokens = 0;
+    }
+}
+
+;; Fungsi staking untuk PoS
+() stake(slice user, int amount) impure {
+    int user_balance = balances.get(user) ?? 0;
+    throw_unless(104, user_balance >= amount);
+    balances.set(user, user_balance - amount);
+    stakes.set(user, (stakes.get(user) ?? 0) + amount);
+}
+
+;; Unstake
+() unstake(slice user, int amount) impure {
+    int user_stake = stakes.get(user) ?? 0;
+    throw_unless(105, user_stake >= amount);
+    stakes.set(user, user_stake - amount);
+    balances.set(user, (balances.get(user) ?? 0) + amount);
+}
+
+;; Getter functions
+(int) get_balance(slice addr) method_id(0x00000001) {
+    return balances.get(addr) ?? 0;
+}
+
+(int) get_stake(slice addr) method_id(0x00000002) {
+    return stakes.get(addr) ?? 0;
+}
+
+(tuple(slice, int, int)) get_reward(int id) method_id(0x00000003) {
+    return rewards.get(id) ?? throw(106, "Reward not found");
+}
